@@ -119,7 +119,7 @@ interface ISensor {
   channel: number;
 }
 
-interface ILastTelemetry {
+export interface ILastTelemetry {
   id: number;
   utc_time: string;
   dev_id: string;
