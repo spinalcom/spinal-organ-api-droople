@@ -272,10 +272,12 @@ export class SyncRunPull {
     console.log('Initiating SyncRunPull');
     try {
       await this.initNetworkContext();
+      console.log('Getting asset information...');
       const assetData = await getAssets();
-      
+      console.log('Assets received');
+      console.log('Updating data ...');
       await this.updateDeviceData(assetData.data);
-
+      console.log('Data updated');
       this.config.lastSync.set(Date.now());
     } catch (e) {
       console.error(e);
@@ -290,9 +292,12 @@ export class SyncRunPull {
       if (!this.running) break;
       const before = Date.now();
       try {
-        console.log("Updating data...");
+        console.log('Getting asset information...');
         const assetData = await getAssets();
+        console.log('Assets received');
+        console.log('Updating data ...');
         await this.updateDeviceData(assetData.data);
+        console.log('Data updated');
         this.config.lastSync.set(Date.now());
       } catch (e) {
         
