@@ -316,7 +316,15 @@ export class SyncRunPull {
           // Look for endpoints
   
           const endpoints = await deviceNode.getChildren('hasBmsEndpoint');
-  
+          const sensors = device.sensors;
+          const sensorAddresses = sensors.map((sensor) => sensor.sensor_address);
+          const filteredSensorAddresses = sensorAddresses.filter((address) => /^\d+$/.test(address));
+          const sortedSensorAddresses = filteredSensorAddresses
+            .map(Number)
+            .sort((a, b) => a - b);
+          
+          
+
           await Promise.all(device.last_telemetry.map( async (telemetry) => {
             if(telemetry.value === null) return;
             let endpointNode = endpoints.find((endpoint) => endpoint.getName().get() === `${telemetry.data_type}-${telemetry.id}`);
