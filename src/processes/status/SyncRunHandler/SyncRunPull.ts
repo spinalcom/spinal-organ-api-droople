@@ -202,7 +202,7 @@ export class SyncRunPull {
           ticketInfo,
           process.getId().get(),
           context.getId().get(),
-          "SpinalNode-0ba1d49d-826d-73e1-0e77-d6d8b187e357-186df7cd2a2",
+          process.env.TMP_SPINAL_NODE_ID,
           'alarm'
         );
         console.log('Ticket created:', ticketNode);
@@ -346,10 +346,10 @@ export class SyncRunPull {
                 endpointNode.info.id.get(),
                 telemetry.value
               );
-              await this.timeseriesService.pushFromEndpoint(
-                endpointNode.info.id.get(),
-                telemetry.value
-              );    
+              // await this.timeseriesService.pushFromEndpoint(
+              //   endpointNode.info.id.get(),
+              //   telemetry.value
+              // );    
             }
           }))
   
@@ -407,9 +407,9 @@ export class SyncRunPull {
     console.log('Initiating SyncRunPull');
     try {
 
+      await this.initNetworkNodes();
       await this.pullAndUpdateTickets();
 
-      await this.initNetworkNodes();
       console.log('Getting asset information...');
       const startTime = Date.now();
       const assetData = await getAssets();
