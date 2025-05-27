@@ -37,7 +37,9 @@ import {
   ILastTelemetry,
   IDevice,
   IAsset,
-  getAssets
+  getAssets,
+  INotificationResponse,
+  getNotifications
 } from '../../../services/client/DIConsulte';
 import { attributeService } from 'spinal-env-viewer-plugin-documentation-service';
 import { NetworkService, SpinalBmsEndpoint } from 'spinal-model-bmsnetwork';
@@ -49,6 +51,7 @@ import {
   InputDataEndpointType,
 } from '../../../model/InputData/InputDataModel/InputDataModel';
 import { SpinalServiceTimeseries } from 'spinal-model-timeseries';
+import { spinalServiceTicket } from 'spinal-service-ticket';
 
 /**
  * Main purpose of this class is to pull tickets from client.
@@ -91,6 +94,33 @@ export class SyncRunPull {
     throw new Error('Network Context Not found');
   }
 
+  async getTicketContext(): Promise<SpinalNode<any>> {
+    const contexts = await this.graph.getChildren();
+    for (const context of contexts) {
+      if (context.info.name.get() === process.env.TICKET_CONTEXT_NAME) {
+        // @ts-ignore
+        SpinalGraphService._addNode(context);
+        return context;
+      }
+    }
+    throw new Error('Ticket Context Not found');
+  }
+
+  async getTicketProcess(): Promise<SpinalNode<any>> {
+    const context = await this.getTicketContext();
+    const processes = await context.getChildren('SpinalSystemServiceTicketHasProcess');
+    const ticketProcess = processes.find((proc) => {
+      // @ts-ignore
+      SpinalGraphService._addNode(proc);
+      return proc.getName().get() === process.env.TICKET_PROCESS_NAME;
+    });
+    if (!ticketProcess) {
+      throw new Error('Ticket Process Not found');
+    }
+    return ticketProcess;
+  }
+
+
   async getVirtualNetwork(): Promise<SpinalNode<any>> {
     const context = await this.getNetworkContext();
     const virtualNetworks = await context.getChildren('hasBmsNetwork');
@@ -117,6 +147,85 @@ export class SyncRunPull {
     });
   }
 
+  async pullAndUpdateTickets(): Promise<void> {
+    
+    const context = await this.getTicketContext();
+    const process = await this.getTicketProcess();
+
+
+    const steps: SpinalNodeRef[] =
+      await spinalServiceTicket.getStepsFromProcess(
+        process.getId().get(),
+        context.getId().get()
+      );
+
+    const raisedStep = steps.find((step) => {
+      return step.name.get() === 'Raised';
+    });
+
+    const solvedStep = steps.find((step) => {
+      return step.name.get() === 'Solved';
+    })
+
+
+    const raisedTickets = await spinalServiceTicket.getTicketsFromStep(
+      raisedStep.id.get()
+    );
+    const solvedTickets = await spinalServiceTicket.getTicketsFromStep(
+      solvedStep.id.get()
+    );
+
+
+    console.log('Current Raised Tickets:', raisedTickets.length);
+    console.log('Current Solved Tickets:', solvedTickets.length);
+
+
+    
+
+    const notificationData = await getNotifications(); // Updated to fetch notifications
+    console.log('Fetched notifications:', notificationData);
+
+    for(const notification of notificationData.data) {
+      const ticketInfo = {
+        name : `${notification.type}-${notification.entity.asset.id}`,
+        date: notification.date,
+        client_name: notification.client_name,
+        entity_class: notification.entity_class,
+      };
+      console.log('Ticket:', ticketInfo);
+      
+
+
+      if(!raisedTickets.find((ticket) => ticket.name.get() === ticketInfo.name)) {
+        console.log('Creating ticket ...');
+        const ticketNode = await spinalServiceTicket.addTicket(
+          ticketInfo,
+          process.getId().get(),
+          context.getId().get(),
+          "SpinalNode-0ba1d49d-826d-73e1-0e77-d6d8b187e357-186df7cd2a2",
+          'alarm'
+        );
+        console.log('Ticket created:', ticketNode);
+      } else {
+        console.log('Ticket already exists:', ticketInfo.name);
+        continue;
+      }
+    }
+
+    for(const ticket of raisedTickets){
+      if(!notificationData.data.find((notification) => 
+        notification.type === ticket.name.get().split('-')[0] 
+      && notification.entity.asset.id === parseInt(ticket.id.get().split('-')[1]))){
+        console.log('Update step of ticket:', ticket.name.get());
+        await spinalServiceTicket.moveTicketToNextStep(
+          context.getId().get(),
+          process.getId().get(),
+          ticket.id.get(),
+        );
+      }
+    }
+    
+  }
 
 
   dateToNumber(dateString: string | Date) {
@@ -298,6 +407,8 @@ export class SyncRunPull {
     console.log('Initiating SyncRunPull');
     try {
 
+      await this.pullAndUpdateTickets();
+
       await this.initNetworkNodes();
       console.log('Getting asset information...');
       const startTime = Date.now();
@@ -325,6 +436,7 @@ export class SyncRunPull {
       if (!this.running) break;
       const before = Date.now();
       try {
+        await this.pullAndUpdateTickets();
         console.log('Getting asset information...');
         const assetData = await getAssets();
         const assetFetchTime = (Date.now() - before) / 1000;

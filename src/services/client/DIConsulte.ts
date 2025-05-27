@@ -119,6 +119,9 @@ interface ISensor {
   channel: number;
 }
 
+
+
+
 export interface ILastTelemetry {
   id: number;
   utc_time: string;
@@ -135,4 +138,37 @@ export interface ILastTelemetry {
 
 export async function getAssets(): Promise<IAssetResponse> {
   return axiosInstance.get(`/assets`).then((res) => res.data);
+}
+
+
+
+
+
+
+export interface Notification {
+  type: string;
+  entity_class: 'device' | 'asset'; // only two options based on example
+  entity: {
+    asset: {
+      name: string;
+      id: number;
+      space: string;
+      type: string;
+    };
+    device?: {
+      dev_id: string;
+    };
+  };
+  date: string; // ISO date string
+  client_name: string;
+}
+
+export interface INotificationResponse {
+  code: number;
+  message: string;
+  data: Notification[];
+}
+
+export async function getNotifications(): Promise<INotificationResponse> {
+  return axiosInstance.get(`/notifications`).then((res) => res.data);
 }
