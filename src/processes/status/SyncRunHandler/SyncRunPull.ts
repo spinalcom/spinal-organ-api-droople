@@ -40,8 +40,9 @@ import {
   getAssets,
   INotificationResponse,
   getNotifications
+
 } from '../../../services/client/DIConsulte';
-import { attributeService } from 'spinal-env-viewer-plugin-documentation-service';
+import serviceDocumentation, { attributeService } from 'spinal-env-viewer-plugin-documentation-service';
 import { NetworkService, SpinalBmsEndpoint } from 'spinal-model-bmsnetwork';
 import {
   InputDataDevice,
@@ -52,6 +53,9 @@ import {
 } from '../../../model/InputData/InputDataModel/InputDataModel';
 import { SpinalServiceTimeseries } from 'spinal-model-timeseries';
 import { spinalServiceTicket } from 'spinal-service-ticket';
+import { stringToTimestamp } from '../../../utils/DateString';
+import { Str } from 'spinal-core-connectorjs';
+import { type } from 'os';
 
 /**
  * Main purpose of this class is to pull tickets from client.
@@ -93,7 +97,18 @@ export class SyncRunPull {
     }
     throw new Error('Network Context Not found');
   }
-
+  
+  async getBimContext(): Promise<SpinalNode<any>> {
+    const contexts = await this.graph.getChildren();
+    for (const context of contexts) {
+      if (context.info.name.get() === process.env.BIM_CONTEXT_NAME) {
+        
+        SpinalGraphService._addNode(context);
+        return context;
+      }
+    }
+    throw new Error('bim Context Not found');
+  }
   async getTicketContext(): Promise<SpinalNode<any>> {
     const contexts = await this.graph.getChildren();
     for (const context of contexts) {
@@ -127,6 +142,7 @@ export class SyncRunPull {
     return virtualNetworks.find((network) => {
       return network.getName().get() === process.env.VIRTUAL_NETWORK_NAME;
     })
+    
   }
 
   async initNetworkNodes(): Promise<void> {
@@ -146,16 +162,46 @@ export class SyncRunPull {
       );
     });
   }
-
+async getBimObjects(): Promise<SpinalNodeRef[]> {
+      
+            const Context = await this.getBimContext();
+            if (!Context) {
+                console.log("BIM Context not found");
+                return [];
+            }
+            const ContextID = Context.info.id.get();
+            const category = (await SpinalGraphService.getChildren(ContextID, ["hasCategory"])).find(child => child.name.get() === process.env.BIM_CATEGORY_NAME);
+            if (!category) {
+                console.log("BIM Category not found");
+                return [];
+            }
+            const categoryID = category.id.get();
+            const Groups = await SpinalGraphService.getChildren(categoryID, ["hasGroup"]);
+            if (Groups.length === 0) {
+                console.log("No groups found under the category");
+                return [];
+            }
+            const Group = Groups.find(G => G.name.get() === process.env.BIM_GROUP_NAME);
+            if (!Group) {
+                console.log("BIM Group not found");
+                return [];
+            }
+            const BimObjects= await SpinalGraphService.getChildren(Group.id.get(), ["groupHasBIMObject"]);
+            if (BimObjects.length === 0) {
+                console.log("No BimObject found in the group");
+                return [];
+            }         
+            return BimObjects;       
+    }
   async pullAndUpdateTickets(): Promise<void> {
     
     const context = await this.getTicketContext();
-    const process = await this.getTicketProcess();
+    const processNode = await this.getTicketProcess();
 
 
     const steps: SpinalNodeRef[] =
       await spinalServiceTicket.getStepsFromProcess(
-        process.getId().get(),
+        processNode.getId().get(),
         context.getId().get()
       );
 
@@ -200,12 +246,40 @@ export class SyncRunPull {
         console.log('Creating ticket ...');
         const ticketNode = await spinalServiceTicket.addTicket(
           ticketInfo,
-          process.getId().get(),
+          processNode.getId().get(),
           context.getId().get(),
           process.env.TMP_SPINAL_NODE_ID,
           'alarm'
         );
+        
         console.log('Ticket created:', ticketNode);
+        //add code de link ticket to the bim object
+        const asset_name = notification.entity.asset.name;
+        const AssetList = asset_name.match(/SACD-\w+/g);
+        //console.log('Asset List:', AssetList);
+        const bimObjects = await this.getBimObjects();
+        //console.log('Bim Objects:', bimObjects.length);
+        for (const asset of AssetList) {
+        await Promise.all(bimObjects.map(async (bimObject) => {
+
+          const RealBimObject = SpinalGraphService.getRealNode(bimObject.id.get());
+          const attribut = await serviceDocumentation.findOneAttributeInCategory(RealBimObject,'Droople Attributs','LO_Nom_Référence');
+          if(attribut!=-1){
+           const deviceName = attribut.value.get();
+           if (deviceName === asset) {
+                     
+            if(typeof ticketNode === 'string') {
+            await SpinalGraphService.addChild(
+              bimObject.id.get(),
+              ticketNode,
+              'SpinalSystemServiceTicketHasTicket',
+              SPINAL_RELATION_PTR_LST_TYPE
+            );
+            console.log('Ticket linked to BIM object:', RealBimObject.getName().get());
+            }
+           }
+          }
+        }));}
       } else {
         console.log('Ticket already exists:', ticketInfo.name);
         continue;
@@ -213,13 +287,14 @@ export class SyncRunPull {
     }
 
     for(const ticket of raisedTickets){
+   
       if(!notificationData.data.find((notification) => 
         notification.type === ticket.name.get().split('-')[0] 
-      && notification.entity.asset.id === parseInt(ticket.id.get().split('-')[1]))){
+      && notification.entity.asset.id === parseInt(ticket.name.get().split('-')[1]))) {
         console.log('Update step of ticket:', ticket.name.get());
         await spinalServiceTicket.moveTicketToNextStep(
           context.getId().get(),
-          process.getId().get(),
+          processNode.getId().get(),
           ticket.id.get(),
         );
       }
@@ -235,11 +310,13 @@ export class SyncRunPull {
 
   async addAttributesToDevice(node: SpinalNode<any>,asset: IAsset, device: IDevice) {
       
+      console.log('Adding attributes to device ...');
       await attributeService.addAttributeByCategoryName(node, 'Asset', 'Name', asset.name),
       await attributeService.addAttributeByCategoryName(node, 'Asset', 'Id', String(asset.id)),
       await attributeService.addAttributeByCategoryName(node, 'Asset', 'Type', asset.type),
       await attributeService.addAttributeByCategoryName(node, 'Asset', 'Space', asset.space),
       await attributeService.addAttributeByCategoryName(node, 'Device', 'Description', device.description),
+      await attributeService.addAttributeByCategoryName(node, 'Device', 'Id', device.dev_id),
       await attributeService.addAttributeByCategoryName(node, 'Device', 'Sample rate', String(device.sample_rate)),
       await attributeService.addAttributeByCategoryName(node, 'Device', 'Sample rate extra', String(device.sample_rate_extra)),
       await attributeService.addAttributeByCategoryName(node, 'Device', 'Sample rate extra', String(device.min_rest_between_cycles))
@@ -280,8 +357,41 @@ export class SyncRunPull {
     //await this.addEndpointAttributes(node,measure);
     return node;
   }
+  
+  async createNotifEndpoint(
+    deviceId: string,
+    endpointName : string,
+    endpointValue : string
+  ) {
+    const context = await this.getNetworkContext();;
+    const endpointNodeModel = new InputDataEndpoint(endpointName,endpointValue,'', InputDataEndpointDataType.Real, InputDataEndpointType.Other);
 
+    const res = new SpinalBmsEndpoint(
+      endpointNodeModel.name,
+      endpointNodeModel.path,
+      endpointNodeModel.currentValue,
+      endpointNodeModel.unit,
+      InputDataEndpointDataType[endpointNodeModel.dataType],
+      InputDataEndpointType[endpointNodeModel.type],
+      endpointNodeModel.id
+    );
+    const childId = SpinalGraphService.createNode(
+      { type: SpinalBmsEndpoint.nodeTypeName, name: endpointNodeModel.name },
+      res
+    );
+    await SpinalGraphService.addChildInContext(
+      deviceId,
+      childId,
+      context.getId().get(),
+      SpinalBmsEndpoint.relationName,
+      SPINAL_RELATION_PTR_LST_TYPE
+    );
 
+    const node = SpinalGraphService.getRealNode(childId);
+    //await this.addEndpointAttributes(node,measure);
+    return node;
+  }
+  
   async createDevice(deviceName) {
     const deviceNodeModel = new InputDataDevice(deviceName, 'device');
     //await this.nwService.updateData(deviceNodeModel);
@@ -289,30 +399,83 @@ export class SyncRunPull {
     console.log('Created device ', device.name.get());
     return device;
   }
-
-  
-
-  
-
   async updateAssetsData(assetData : IAsset[]){
-    let deviceNodes : SpinalNode<any>[] = await this.virtualNetworkContext.getChildren('hasBmsDevice');
+    //const assetsToProcess = assetData.slice(0,50);
+    //const assetsToProcess= assetData.filter((asset) => asset.name === 'Urinoir SACD-E0008');
+    
     await Promise.all( assetData.map( async (asset) => {
+      //for (const asset of assetsToProcess){
         console.log('Asset : ', asset.name);
+        //console.log(asset.devices.length, ' devices found for asset ', asset.name);
+        
         for(const device of asset.devices){
-          console.log('Device : ', device.dev_id);
-          let deviceNode = deviceNodes.find((deviceNode) => deviceNode.getName().get() === device.dev_id);
-          if (!deviceNode){
-            const deviceInfo = await this.createDevice(device.dev_id);
+
+          let deviceNodes : SpinalNode<any>[] = await this.virtualNetworkContext.getChildren('hasBmsDevice');
+          let deviceNode = deviceNodes.find((deviceNode) => deviceNode.getName().get() === asset.name);
+          //console.log('Device Node : ', deviceNode);
+           if (!deviceNode){
+            
+            const deviceInfo = await this.createDevice(asset.name);
+            //const deviceInfo = await this.createDevice(asset.name);
             deviceNode = SpinalGraphService.getRealNode(deviceInfo.id.get());
             // deviceNode = await this.networkContext.findOneInContext(
             //   this.networkContext,
             //   (node) => node.getName().get() === device.dev_id
             // )
             await this.addAttributesToDevice(deviceNode, asset, device);
+          
           }
-  
+          
           SpinalGraphService._addNode(deviceNode);
-  
+           // Add notifications as enppoints to the device 
+          const notifications = device.notifications;
+          //const notificationNames = Object.keys(notifications);
+          //console.log(`Notifications for device`,notificationNames);
+          const notif = await deviceNode.getChildren('hasBmsEndpoint');
+          
+
+           for (const key in notifications) {
+            //console.log('Notification key : ', key);
+              //if (notifications.hasOwnProperty(key)) {
+                //console.log('Notification value : ', notifications[key]);
+                
+                let notifNode = notif.find((n) => n.getName().get() === key);
+                let Value : any;
+                if (!notifNode) {
+                  console.log('Creating notification endpoint ...');
+                  if (key.includes("last_checked")){
+                     Value = String(new Date ((notifications[key])));
+                  }else {
+                     Value = String(notifications[key]);
+                  }
+                  
+                  notifNode = await this.createNotifEndpoint(deviceNode.getId().get(),key,Value);
+                  SpinalGraphService._addNode(notifNode);
+                  await this.nwService.setEndpointValue(notifNode.info.id.get(), Value);
+                  //await this.timeseriesService.pushFromEndpoint(
+                   // notifNode.info.id.get(),
+                    notifications[key]
+                  //);
+                  //const realNode = SpinalGraphService.getRealNode(
+                    //notifNode.getId().get()
+                  //);
+                  //await attributeService.updateAttribute(
+                  //  realNode,
+                   // 'default',
+                   // 'timeSeries maxDay',
+                    //{ value: '366' }
+                 // );
+                
+                }else{
+                  SpinalGraphService._addNode(notifNode);
+                  await this.nwService.setEndpointValue(
+                    notifNode.info.id.get(),
+                    Value
+                  );
+                  
+                }
+              //}
+           }
           // Look for endpoints
   
           const endpoints = await deviceNode.getChildren('hasBmsEndpoint');
@@ -323,14 +486,18 @@ export class SyncRunPull {
             .map(Number)
             .sort((a, b) => a - b);
           
-          
-
+          const AssetName = asset.name
+          const result = AssetName.match(/SACD-\w+/g);
+          console.log('Asset Names : ', result);
           await Promise.all(device.last_telemetry.map( async (telemetry) => {
             if(telemetry.value === null) return;
             let endpointNode = endpoints.find((endpoint) => endpoint.getName().get() === `${telemetry.data_type}-${telemetry.id}`);
+            let EndP_sensor_add=Number(telemetry.sensor_address);
+            //console.log("ednpoint sensor address : ", EndP_sensor_add)
             
             if(!endpointNode){
               //create new endpoint
+              
               endpointNode = await this.createEndpoint(deviceNode.getId().get(), telemetry);
               SpinalGraphService._addNode(endpointNode);
               await this.nwService.setEndpointValue(endpointNode.info.id.get(), telemetry.value);
@@ -347,6 +514,21 @@ export class SyncRunPull {
                 'timeSeries maxDay',
                 { value: '366' }
               );
+              //ajouter l'attribut device_name
+              if(result.length==2 && sortedSensorAddresses.length ==2){
+                if(EndP_sensor_add == sortedSensorAddresses[0]){
+                  await attributeService.addAttributeByCategoryName(realNode, 'Asset', 'device_name', result[0]);
+                }
+                else if(EndP_sensor_add == sortedSensorAddresses[1]){
+                  await attributeService.addAttributeByCategoryName(realNode, 'Asset', 'device_name', result[1]);
+                }
+                else if(EndP_sensor_add==0){
+                  await attributeService.addAttributeByCategoryName(realNode, 'Asset', 'device_name',result[0]+" + " +result[1]);
+                }
+                
+              } else if(result.length==1 && sortedSensorAddresses.length ==0){
+                await attributeService.addAttributeByCategoryName(realNode, 'Asset', 'device_name',result[0]);
+              }
             }
             else {
               SpinalGraphService._addNode(endpointNode);
@@ -408,8 +590,9 @@ export class SyncRunPull {
           }
         
       
-    }));
-  }
+       }));
+      
+  } 
 
   async init(): Promise<void> {
     console.log('Initiating SyncRunPull');
@@ -426,7 +609,7 @@ export class SyncRunPull {
       
       console.log('Updating data ...');
       const updateStartTime = Date.now();
-      await this.updateAssetsData(assetData.data);
+      //await this.updateAssetsData(assetData.data);
       const updateTime = (Date.now() - updateStartTime) / 1000;
       console.log(`Data updated in ${updateTime} seconds`);
       

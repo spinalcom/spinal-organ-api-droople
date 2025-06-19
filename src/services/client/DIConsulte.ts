@@ -78,7 +78,17 @@ export interface IDevice {
   client: IClient;
   sensors: ISensor[];
   last_telemetry: ILastTelemetry[];
+  notifications: Notifications;
 }
+interface Notifications  {
+  signal: string | null;
+  battery: string | null;
+  sensor_misplugged: string | null;
+  last_checked_sensor: string;
+  last_checked_signal: string;
+  last_checked_battery: string;
+};
+
 
 interface IModel {
   id: string;
@@ -119,9 +129,6 @@ interface ISensor {
   channel: number;
 }
 
-
-
-
 export interface ILastTelemetry {
   id: number;
   utc_time: string;
@@ -139,11 +146,6 @@ export interface ILastTelemetry {
 export async function getAssets(): Promise<IAssetResponse> {
   return axiosInstance.get(`/assets`).then((res) => res.data);
 }
-
-
-
-
-
 
 export interface Notification {
   type: string;
@@ -168,6 +170,7 @@ export interface INotificationResponse {
   message: string;
   data: Notification[];
 }
+
 
 export async function getNotifications(): Promise<INotificationResponse> {
   return axiosInstance.get(`/notifications`).then((res) => res.data);
