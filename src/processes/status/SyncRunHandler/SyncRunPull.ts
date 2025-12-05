@@ -231,18 +231,18 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
     const notificationData = await getNotifications(); // Updated to fetch notifications
     console.log('Fetched notifications:', notificationData);
 
-    for(const notification of notificationData.data) {
+    for (const notification of notificationData.data) {
       const ticketInfo = {
-        name : `${notification.type}-${notification.entity.asset.id}`,
+        name: `${notification.type}-${notification.entity.asset.name}`,
         date: notification.date,
         client_name: notification.client_name,
         entity_class: notification.entity_class,
       };
       console.log('Ticket:', ticketInfo);
-      
 
 
-      if(!raisedTickets.find((ticket) => ticket.name.get() === ticketInfo.name)) {
+
+      if (!raisedTickets.find((ticket) => ticket.name.get() === ticketInfo.name)) {
         console.log('Creating ticket ...');
         const ticketNode = await spinalServiceTicket.addTicket(
           ticketInfo,
@@ -251,35 +251,49 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
           process.env.TMP_SPINAL_NODE_ID,
           'alarm'
         );
-        
-        console.log('Ticket created:', ticketNode);
-        //add code de link ticket to the bim object
-        const asset_name = notification.entity.asset.name;
-        const AssetList = asset_name.match(/SACD-\w+/g);
-        //console.log('Asset List:', AssetList);
-        const bimObjects = await this.getBimObjects();
-        //console.log('Bim Objects:', bimObjects.length);
-        for (const asset of AssetList) {
-        await Promise.all(bimObjects.map(async (bimObject) => {
+        const attrsToUp: Record<string, string> = {
+          asset_id: String(notification.entity.asset.id),
+          asset_name: notification.entity.asset.name,
+          space : notification.entity.asset.space,
+          asset_type: notification.entity.asset.type,
+          device : notification.entity.device.dev_id,
+        };
+    
+        if (typeof ticketNode === 'string') {
+          const realTicket = SpinalGraphService.getRealNode(ticketNode);
+          await serviceDocumentation.createOrUpdateAttrsAndCategories(realTicket,"Asset",attrsToUp)
+          
 
-          const RealBimObject = SpinalGraphService.getRealNode(bimObject.id.get());
-          const attribut = await serviceDocumentation.findOneAttributeInCategory(RealBimObject,'Droople Attributs','LO_Nom_Référence');
-          if(attribut!=-1){
-           const deviceName = attribut.value.get();
-           if (deviceName === asset) {
-                     
-            if(typeof ticketNode === 'string') {
-            await SpinalGraphService.addChild(
-              bimObject.id.get(),
-              ticketNode,
-              'SpinalSystemServiceTicketHasTicket',
-              SPINAL_RELATION_PTR_LST_TYPE
-            );
-            console.log('Ticket linked to BIM object:', RealBimObject.getName().get());
-            }
-           }
+          console.log('Ticket created:', ticketNode);
+          // link ticket to the bim object
+          const asset_name = notification.entity.asset.name;
+          const AssetList = asset_name.match(/SACD-\w+/g);
+          //console.log('Asset List:', AssetList);
+          const bimObjects = await this.getBimObjects();
+          //console.log('Bim Objects:', bimObjects.length);
+          for (const asset of AssetList) {
+            await Promise.all(bimObjects.map(async (bimObject) => {
+
+              const RealBimObject = SpinalGraphService.getRealNode(bimObject.id.get());
+              const attribut = await serviceDocumentation.findOneAttributeInCategory(RealBimObject, 'Droople Attributs', 'LO_Nom_Référence');
+              if (attribut != -1) {
+                const deviceName = attribut.value.get();
+                if (deviceName === asset) {
+
+
+                  await SpinalGraphService.addChild(
+                    bimObject.id.get(),
+                    ticketNode,
+                    'SpinalSystemServiceTicketHasTicket',
+                    SPINAL_RELATION_PTR_LST_TYPE
+                  );
+                  console.log('Ticket linked to BIM object:', RealBimObject.getName().get());
+
+                }
+              }
+            }));
           }
-        }));}
+        }
       } else {
         console.log('Ticket already exists:', ticketInfo.name);
         continue;
@@ -287,10 +301,10 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
     }
 
     for(const ticket of raisedTickets){
-   
+     
       if(!notificationData.data.find((notification) => 
         notification.type === ticket.name.get().split('-')[0] 
-      && notification.entity.asset.id === parseInt(ticket.name.get().split('-')[1]))) {
+      && notification.entity.asset.name.split('-')[1] === ticket.name.get().split('-')[2])) {
         console.log('Update step of ticket:', ticket.name.get());
         await spinalServiceTicket.moveTicketToNextStep(
           context.getId().get(),
@@ -364,7 +378,7 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
     endpointValue : string
   ) {
     const context = await this.getNetworkContext();;
-    const endpointNodeModel = new InputDataEndpoint(endpointName,endpointValue,'', InputDataEndpointDataType.Real, InputDataEndpointType.Other);
+    const endpointNodeModel = new InputDataEndpoint(endpointName,endpointValue,'', InputDataEndpointDataType.String, InputDataEndpointType.Other);
 
     const res = new SpinalBmsEndpoint(
       endpointNodeModel.name,
@@ -400,10 +414,10 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
     return device;
   }
   async updateAssetsData(assetData : IAsset[]){
-    //const assetsToProcess = assetData.slice(0,50);
+    //const assetsToProcess = assetData.slice(0,5);
     //const assetsToProcess= assetData.filter((asset) => asset.name === 'Urinoir SACD-E0008');
-    
-    await Promise.all( assetData.map( async (asset) => {
+
+    await Promise.all(assetData.map( async (asset) => {
       //for (const asset of assetsToProcess){
         console.log('Asset : ', asset.name);
         //console.log(asset.devices.length, ' devices found for asset ', asset.name);
@@ -433,47 +447,36 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
           //console.log(`Notifications for device`,notificationNames);
           const notif = await deviceNode.getChildren('hasBmsEndpoint');
           
-
+          function normalizeNotifValue(val: unknown): string {
+            if (val == null) return ""; // on normalise null/undefined en string vide
+            const parsed = new Date(String(val));
+            if (!isNaN(parsed.getTime())) {
+              return parsed.toISOString(); // date valide standardisée
+            }
+            // si ce n’est pas une date, on prend quand même la string brute
+            return String(val);
+          }
            for (const key in notifications) {
-            //console.log('Notification key : ', key);
-              //if (notifications.hasOwnProperty(key)) {
-                //console.log('Notification value : ', notifications[key]);
-                
+           
                 let notifNode = notif.find((n) => n.getName().get() === key);
-                let Value : any;
-                if (!notifNode) {
-                  console.log('Creating notification endpoint ...');
-                  if (key.includes("last_checked")){
-                     Value = String(new Date ((notifications[key])));
-                  }else {
-                     Value = String(notifications[key]);
-                  }
-                  
-                  notifNode = await this.createNotifEndpoint(deviceNode.getId().get(),key,Value);
-                  SpinalGraphService._addNode(notifNode);
-                  await this.nwService.setEndpointValue(notifNode.info.id.get(), Value);
-                  //await this.timeseriesService.pushFromEndpoint(
-                   // notifNode.info.id.get(),
-                    notifications[key]
-                  //);
-                  //const realNode = SpinalGraphService.getRealNode(
-                    //notifNode.getId().get()
-                  //);
-                  //await attributeService.updateAttribute(
-                  //  realNode,
-                   // 'default',
-                   // 'timeSeries maxDay',
-                    //{ value: '366' }
-                 // );
+                const valueString = normalizeNotifValue(notifications[key]);
                 
-                }else{
-                  SpinalGraphService._addNode(notifNode);
-                  await this.nwService.setEndpointValue(
-                    notifNode.info.id.get(),
-                    Value
-                  );
-                  
-                }
+             if (!notifNode) {
+               console.log("Creating notification endpoint ...");
+               notifNode = await this.createNotifEndpoint(
+                 deviceNode.getId().get(),
+                 key,
+                 valueString
+               );
+               SpinalGraphService._addNode(notifNode);
+             } else {
+               SpinalGraphService._addNode(notifNode);
+             }
+
+             await this.nwService.setEndpointValue(
+               notifNode.info.id.get(),
+               valueString
+             );
               //}
            }
           // Look for endpoints
