@@ -612,7 +612,7 @@ async getBimObjects(): Promise<SpinalNodeRef[]> {
       
       console.log('Updating data ...');
       const updateStartTime = Date.now();
-      //await this.updateAssetsData(assetData.data);
+      await this.updateAssetsData(assetData.data);
       const updateTime = (Date.now() - updateStartTime) / 1000;
       console.log(`Data updated in ${updateTime} seconds`);
       
